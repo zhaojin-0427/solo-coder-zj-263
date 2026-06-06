@@ -4,10 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const {
   STATUS,
-  APPROVAL_STATUS,
   weapons,
   repairs,
-  repairApprovals,
   generateId,
   canTransition
 } = require('../store');
@@ -27,167 +25,6 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-router.post('/apply', (req, res) => {
-  const { weaponId, applicantName, applicantContact, damageDetail, expectedCost } = req.body;
-
-  if (!weaponId || !applicantName) {
-    return res.fail('请指定兵器ID和申请人姓名');
-  }
-
-  const weapon = weapons.get(weaponId);
-  if (!weapon) return res.fail('兵器不存在', 404);
-
-  if (!canTransition(weapon.status, STATUS.PENDING_APPROVAL)) {
-    return res.fail(`当前状态 ${weapon.status} 无法提交修复申请`);
-  }
-
-  const now = new Date();
-  weapon.status = STATUS.PENDING_APPROVAL;
-  weapon.statusHistory.push({ status: STATUS.PENDING_APPROVAL, time: now.toISOString(), remark: '提交修复申请' });
-  weapon.updatedAt = now.toISOString();
-
-  const approvalId = generateId();
-  const approval = {
-    id: approvalId,
-    weaponId,
-    applicant: {
-      name: applicantName,
-      contact: applicantContact || ''
-    },
-    damageDetail: damageDetail || '',
-    expectedCost: expectedCost || null,
-    status: APPROVAL_STATUS.PENDING_PLAN,
-    plan: null,
-    restorer: null,
-    adminRemark: '',
-    appliedAt: now.toISOString(),
-    planSubmittedAt: null,
-    decidedAt: null
-  };
-  repairApprovals.set(approvalId, approval);
-
-  return res.success({ approval, weapon }, '修复申请已提交', 201);
-});
-
-router.post('/approvals/:approvalId/plan', (req, res) => {
-  const approval = repairApprovals.get(req.params.approvalId);
-  if (!approval) return res.fail('审批记录不存在', 404);
-  if (approval.status !== APPROVAL_STATUS.PENDING_PLAN) {
-    return res.fail(`当前状态 ${approval.status} 无法录入修复方案`);
-  }
-
-  const { restorerName, restorerContact, planDescription, estimatedDays, estimatedCost } = req.body;
-  if (!restorerName || !planDescription) {
-    return res.fail('请填写修复师姓名和修复方案描述');
-  }
-
-  const now = new Date();
-  approval.status = APPROVAL_STATUS.PENDING_APPROVAL;
-  approval.restorer = {
-    name: restorerName,
-    contact: restorerContact || ''
-  };
-  approval.plan = {
-    description: planDescription,
-    estimatedDays: estimatedDays || null,
-    estimatedCost: estimatedCost || null,
-    submittedAt: now.toISOString()
-  };
-  approval.planSubmittedAt = now.toISOString();
-
-  return res.success(approval, '修复方案已录入');
-});
-
-router.post('/approvals/:approvalId/approve', (req, res) => {
-  const approval = repairApprovals.get(req.params.approvalId);
-  if (!approval) return res.fail('审批记录不存在', 404);
-  if (approval.status !== APPROVAL_STATUS.PENDING_APPROVAL) {
-    return res.fail(`当前状态 ${approval.status} 无法审批`);
-  }
-
-  const { adminName, remark } = req.body;
-  if (!adminName) return res.fail('请指定审批管理员姓名');
-
-  const now = new Date();
-  approval.status = APPROVAL_STATUS.APPROVED;
-  approval.adminRemark = remark || '';
-  approval.adminName = adminName;
-  approval.decidedAt = now.toISOString();
-
-  const weapon = weapons.get(approval.weaponId);
-  if (weapon && canTransition(weapon.status, STATUS.PENDING_REPAIR)) {
-    weapon.status = STATUS.PENDING_REPAIR;
-    weapon.statusHistory.push({ status: STATUS.PENDING_REPAIR, time: now.toISOString(), remark: `审批通过: ${remark || '管理员审批通过'}` });
-    weapon.updatedAt = now.toISOString();
-  }
-
-  return res.success({ approval, weapon }, '审批通过');
-});
-
-router.post('/approvals/:approvalId/reject', (req, res) => {
-  const approval = repairApprovals.get(req.params.approvalId);
-  if (!approval) return res.fail('审批记录不存在', 404);
-  if (approval.status !== APPROVAL_STATUS.PENDING_APPROVAL) {
-    return res.fail(`当前状态 ${approval.status} 无法审批`);
-  }
-
-  const { adminName, remark } = req.body;
-  if (!adminName) return res.fail('请指定审批管理员姓名');
-  if (!remark) return res.fail('驳回时请填写驳回原因');
-
-  const now = new Date();
-  approval.status = APPROVAL_STATUS.REJECTED;
-  approval.adminRemark = remark;
-  approval.adminName = adminName;
-  approval.decidedAt = now.toISOString();
-
-  const weapon = weapons.get(approval.weaponId);
-  if (weapon && canTransition(weapon.status, STATUS.NORMAL)) {
-    weapon.status = STATUS.NORMAL;
-    weapon.statusHistory.push({ status: STATUS.NORMAL, time: now.toISOString(), remark: `审批驳回: ${remark}` });
-    weapon.updatedAt = now.toISOString();
-  }
-
-  return res.success({ approval, weapon }, '审批已驳回');
-});
-
-router.get('/approvals', (req, res) => {
-  const { weaponId, status, page = 1, pageSize = 20 } = req.query;
-  const p = parseInt(page);
-  const ps = parseInt(pageSize);
-
-  let list = Array.from(repairApprovals.values());
-  if (weaponId) list = list.filter(a => a.weaponId === weaponId);
-  if (status) list = list.filter(a => a.status === status);
-
-  list.sort((a, b) => new Date(b.appliedAt) - new Date(a.appliedAt));
-
-  const withWeapon = list.map(a => ({
-    ...a,
-    weapon: weapons.get(a.weaponId) || null
-  }));
-
-  const total = withWeapon.length;
-  const start = (p - 1) * ps;
-  const paginated = withWeapon.slice(start, start + ps);
-
-  return res.success({ list: paginated, total, page: p, pageSize: ps });
-});
-
-router.get('/approvals/:approvalId', (req, res) => {
-  const approval = repairApprovals.get(req.params.approvalId);
-  if (!approval) return res.fail('审批记录不存在', 404);
-  const weapon = weapons.get(approval.weaponId);
-  return res.success({ ...approval, weapon });
-});
-
-router.get('/approvals/weapon/:weaponId', (req, res) => {
-  const list = Array.from(repairApprovals.values())
-    .filter(a => a.weaponId === req.params.weaponId)
-    .sort((a, b) => new Date(b.appliedAt) - new Date(a.appliedAt));
-  return res.success(list);
-});
-
 router.post('/accept', (req, res) => {
   const { weaponId, restorerName, restorerContact, remark } = req.body;
 
@@ -197,21 +34,6 @@ router.post('/accept', (req, res) => {
 
   const weapon = weapons.get(weaponId);
   if (!weapon) return res.fail('兵器不存在', 404);
-
-  const rejectedApproval = Array.from(repairApprovals.values()).find(
-    a => a.weaponId === weaponId && a.status === APPROVAL_STATUS.REJECTED
-  );
-  const approvedApproval = Array.from(repairApprovals.values()).find(
-    a => a.weaponId === weaponId && a.status === APPROVAL_STATUS.APPROVED
-  );
-
-  if (rejectedApproval && !approvedApproval) {
-    return res.fail('该兵器修复申请已被驳回，不能接单修复，请重新提交申请');
-  }
-
-  if (!approvedApproval) {
-    return res.fail('该兵器尚未通过审批，无法接单修复');
-  }
 
   if (!canTransition(weapon.status, STATUS.REPAIRING)) {
     return res.fail(`当前状态 ${weapon.status} 无法开始修复`);
@@ -226,7 +48,6 @@ router.post('/accept', (req, res) => {
   const repair = {
     id: repairId,
     weaponId,
-    approvalId: approvedApproval.id,
     restorer: {
       name: restorerName,
       contact: restorerContact || ''

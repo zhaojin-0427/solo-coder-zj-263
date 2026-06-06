@@ -9,8 +9,11 @@ const {
   generateId,
   calculateMaintenanceDays,
   canTransition,
-  addDays
+  addDays,
+  setWeaponStatus,
+  updateWeaponStatus
 } = require('../store');
+const { queryList } = require('../helpers/query');
 
 const router = express.Router();
 
@@ -81,22 +84,14 @@ router.post('/', upload.array('photos', 10), (req, res) => {
 });
 
 router.get('/', (req, res) => {
-  const { status, era, material, page = 1, pageSize = 20 } = req.query;
-  const p = parseInt(page);
-  const ps = parseInt(pageSize);
-
-  let list = Array.from(weapons.values());
-  if (status) list = list.filter(w => w.status === status);
-  if (era) list = list.filter(w => w.era === era);
-  if (material) list = list.filter(w => w.material === material);
-
-  list.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  const total = list.length;
-  const start = (p - 1) * ps;
-  const paginated = list.slice(start, start + ps);
-
-  return res.success({ list: paginated, total, page: p, pageSize: ps });
+  const { status, era, material } = req.query;
+  const result = queryList({
+    mapData: weapons,
+    filters: { status, era, material },
+    dateField: 'createdAt',
+    query: req.query
+  });
+  return res.success(result);
 });
 
 router.get('/:id', (req, res) => {
@@ -152,14 +147,9 @@ router.post('/:id/status', (req, res) => {
   const { status, remark } = req.body;
   if (!status) return res.fail('请指定目标状态');
 
-  if (!canTransition(weapon.status, status)) {
+  if (!updateWeaponStatus(weapon, status, remark || '')) {
     return res.fail(`不允许从 ${weapon.status} 转换到 ${status}`);
   }
-
-  const now = new Date();
-  weapon.status = status;
-  weapon.statusHistory.push({ status, time: now.toISOString(), remark: remark || '' });
-  weapon.updatedAt = now.toISOString();
 
   return res.success(weapon, '状态更新成功');
 });

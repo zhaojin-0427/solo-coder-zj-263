@@ -77,6 +77,139 @@ function daysBetween(date1, date2) {
   return Math.round((date2 - date1) / oneDay);
 }
 
+function updateWeaponStatus(weapon, nextStatus, remark = '') {
+  if (!canTransition(weapon.status, nextStatus)) return false;
+  const now = new Date();
+  weapon.status = nextStatus;
+  weapon.statusHistory.push({ status: nextStatus, time: now.toISOString(), remark });
+  weapon.updatedAt = now.toISOString();
+  return true;
+}
+
+function setWeaponStatus(weapon, nextStatus, remark = '') {
+  const now = new Date();
+  weapon.status = nextStatus;
+  weapon.statusHistory.push({ status: nextStatus, time: now.toISOString(), remark });
+  weapon.updatedAt = now.toISOString();
+  return now;
+}
+
+function findApprovalByWeapon(weaponId, status) {
+  return Array.from(repairApprovals.values()).find(
+    a => a.weaponId === weaponId && a.status === status
+  );
+}
+
+function generateRemindersForAll() {
+  const now = new Date();
+  const reminderDaysAhead = 7;
+
+  maintenancePlans.forEach((plan, weaponId) => {
+    const nextDate = new Date(plan.nextMaintenanceDate);
+    const daysToNext = daysBetween(now, nextDate);
+
+    if (daysToNext <= reminderDaysAhead && daysToNext >= 0) {
+      const existing = Array.from(reminders.values()).find(
+        r => r.weaponId === weaponId && r.type === 'maintenance' && !r.acknowledged &&
+          Math.abs(daysBetween(new Date(r.createdAt), now)) < 1
+      );
+      if (!existing) {
+        const reminder = {
+          id: generateId(),
+          weaponId,
+          type: 'maintenance',
+          title: '养护到期提醒',
+          content: `兵器养护将在 ${daysToNext} 天后到期`,
+          dueDate: nextDate.toISOString(),
+          daysRemaining: daysToNext,
+          acknowledged: false,
+          createdAt: now.toISOString()
+        };
+        reminders.set(reminder.id, reminder);
+      }
+    }
+
+    if (daysToNext < 0) {
+      const existing = Array.from(reminders.values()).find(
+        r => r.weaponId === weaponId && r.type === 'maintenance_overdue' && !r.acknowledged
+      );
+      if (!existing) {
+        const reminder = {
+          id: generateId(),
+          weaponId,
+          type: 'maintenance_overdue',
+          title: '养护逾期提醒',
+          content: `兵器养护已逾期 ${Math.abs(daysToNext)} 天`,
+          dueDate: nextDate.toISOString(),
+          daysOverdue: Math.abs(daysToNext),
+          acknowledged: false,
+          createdAt: now.toISOString()
+        };
+        reminders.set(reminder.id, reminder);
+      }
+    }
+  });
+
+  borrowRecords.forEach(record => {
+    if (record.status !== 'borrowed') return;
+    const dueDate = new Date(record.expectedReturnDate);
+    const daysToReturn = daysBetween(now, dueDate);
+
+    if (daysToReturn <= 3 && daysToReturn >= 0) {
+      const existing = Array.from(reminders.values()).find(
+        r => r.weaponId === record.weaponId && r.type === 'borrow_return' && !r.acknowledged &&
+          Math.abs(daysBetween(new Date(r.createdAt), now)) < 1
+      );
+      if (!existing) {
+        const reminder = {
+          id: generateId(),
+          weaponId: record.weaponId,
+          borrowRecordId: record.id,
+          type: 'borrow_return',
+          title: '外借归还提醒',
+          content: `展览外借将在 ${daysToReturn} 天后到期，请按时归还`,
+          dueDate: dueDate.toISOString(),
+          daysRemaining: daysToReturn,
+          acknowledged: false,
+          createdAt: now.toISOString()
+        };
+        reminders.set(reminder.id, reminder);
+      }
+    }
+
+    if (daysToReturn < 0) {
+      const existing = Array.from(reminders.values()).find(
+        r => r.weaponId === record.weaponId && r.type === 'borrow_overdue' && !r.acknowledged
+      );
+      if (!existing) {
+        const reminder = {
+          id: generateId(),
+          weaponId: record.weaponId,
+          borrowRecordId: record.id,
+          type: 'borrow_overdue',
+          title: '外借逾期提醒',
+          content: `展览外借已逾期 ${Math.abs(daysToReturn)} 天，请尽快归还`,
+          dueDate: dueDate.toISOString(),
+          daysOverdue: Math.abs(daysToReturn),
+          acknowledged: false,
+          createdAt: now.toISOString()
+        };
+        reminders.set(reminder.id, reminder);
+      }
+    }
+  });
+}
+
+function acknowledgeRemindersBy(predicate) {
+  const now = new Date().toISOString();
+  const related = Array.from(reminders.values()).filter(predicate);
+  related.forEach(r => {
+    r.acknowledged = true;
+    r.acknowledgedAt = now;
+  });
+  return related;
+}
+
 module.exports = {
   STATUS,
   STATUS_TRANSITIONS,
@@ -94,5 +227,10 @@ module.exports = {
   calculateMaintenanceDays,
   canTransition,
   addDays,
-  daysBetween
+  daysBetween,
+  updateWeaponStatus,
+  setWeaponStatus,
+  findApprovalByWeapon,
+  generateRemindersForAll,
+  acknowledgeRemindersBy
 };

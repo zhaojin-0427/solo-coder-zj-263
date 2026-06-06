@@ -9,133 +9,25 @@ const {
   generateId,
   calculateMaintenanceDays,
   addDays,
-  daysBetween
+  setWeaponStatus,
+  generateRemindersForAll,
+  acknowledgeRemindersBy
 } = require('../store');
+const { queryList, contains, parseBool } = require('../helpers/query');
 
 const router = express.Router();
 
-function generateRemindersForAll() {
-  const now = new Date();
-  const reminderDaysAhead = 7;
-
-  maintenancePlans.forEach((plan, weaponId) => {
-    const nextDate = new Date(plan.nextMaintenanceDate);
-    const daysToNext = daysBetween(now, nextDate);
-
-    if (daysToNext <= reminderDaysAhead && daysToNext >= 0) {
-      const existing = Array.from(reminders.values()).find(
-        r => r.weaponId === weaponId && r.type === 'maintenance' && !r.acknowledged &&
-          Math.abs(daysBetween(new Date(r.createdAt), now)) < 1
-      );
-      if (!existing) {
-        const reminder = {
-          id: generateId(),
-          weaponId,
-          type: 'maintenance',
-          title: '养护到期提醒',
-          content: `兵器养护将在 ${daysToNext} 天后到期`,
-          dueDate: nextDate.toISOString(),
-          daysRemaining: daysToNext,
-          acknowledged: false,
-          createdAt: now.toISOString()
-        };
-        reminders.set(reminder.id, reminder);
-      }
-    }
-
-    if (daysToNext < 0) {
-      const existing = Array.from(reminders.values()).find(
-        r => r.weaponId === weaponId && r.type === 'maintenance_overdue' && !r.acknowledged
-      );
-      if (!existing) {
-        const reminder = {
-          id: generateId(),
-          weaponId,
-          type: 'maintenance_overdue',
-          title: '养护逾期提醒',
-          content: `兵器养护已逾期 ${Math.abs(daysToNext)} 天`,
-          dueDate: nextDate.toISOString(),
-          daysOverdue: Math.abs(daysToNext),
-          acknowledged: false,
-          createdAt: now.toISOString()
-        };
-        reminders.set(reminder.id, reminder);
-      }
-    }
-  });
-
-  borrowRecords.forEach(record => {
-    if (record.status !== 'borrowed') return;
-    const dueDate = new Date(record.expectedReturnDate);
-    const daysToReturn = daysBetween(now, dueDate);
-
-    if (daysToReturn <= 3 && daysToReturn >= 0) {
-      const existing = Array.from(reminders.values()).find(
-        r => r.weaponId === record.weaponId && r.type === 'borrow_return' && !r.acknowledged &&
-          Math.abs(daysBetween(new Date(r.createdAt), now)) < 1
-      );
-      if (!existing) {
-        const reminder = {
-          id: generateId(),
-          weaponId: record.weaponId,
-          borrowRecordId: record.id,
-          type: 'borrow_return',
-          title: '外借归还提醒',
-          content: `展览外借将在 ${daysToReturn} 天后到期，请按时归还`,
-          dueDate: dueDate.toISOString(),
-          daysRemaining: daysToReturn,
-          acknowledged: false,
-          createdAt: now.toISOString()
-        };
-        reminders.set(reminder.id, reminder);
-      }
-    }
-
-    if (daysToReturn < 0) {
-      const existing = Array.from(reminders.values()).find(
-        r => r.weaponId === record.weaponId && r.type === 'borrow_overdue' && !r.acknowledged
-      );
-      if (!existing) {
-        const reminder = {
-          id: generateId(),
-          weaponId: record.weaponId,
-          borrowRecordId: record.id,
-          type: 'borrow_overdue',
-          title: '外借逾期提醒',
-          content: `展览外借已逾期 ${Math.abs(daysToReturn)} 天，请尽快归还`,
-          dueDate: dueDate.toISOString(),
-          daysOverdue: Math.abs(daysToReturn),
-          acknowledged: false,
-          createdAt: now.toISOString()
-        };
-        reminders.set(reminder.id, reminder);
-      }
-    }
-  });
-}
-
 router.get('/plans', (req, res) => {
-  const { weaponId, material, environment, page = 1, pageSize = 20 } = req.query;
-  const p = parseInt(page);
-  const ps = parseInt(pageSize);
-
-  let list = Array.from(maintenancePlans.values());
-  if (weaponId) list = list.filter(pl => pl.weaponId === weaponId);
-  if (material) list = list.filter(pl => pl.material === material);
-  if (environment) list = list.filter(pl => pl.environment === environment);
-
-  const withWeapon = list.map(pl => ({
-    ...pl,
-    weapon: weapons.get(pl.weaponId) || null
-  }));
-
-  withWeapon.sort((a, b) => new Date(a.nextMaintenanceDate) - new Date(b.nextMaintenanceDate));
-
-  const total = withWeapon.length;
-  const start = (p - 1) * ps;
-  const paginated = withWeapon.slice(start, start + ps);
-
-  return res.success({ list: paginated, total, page: p, pageSize: ps });
+  const { weaponId, material, environment } = req.query;
+  const result = queryList({
+    mapData: maintenancePlans,
+    filters: { weaponId, material, environment },
+    dateField: 'nextMaintenanceDate',
+    sortDirection: 'asc',
+    withWeapon: true,
+    query: req.query
+  });
+  return res.success(result);
 });
 
 router.get('/plans/:weaponId', (req, res) => {
@@ -197,41 +89,30 @@ router.post('/plans/:weaponId/maintain', (req, res) => {
   };
   maintenanceLogs.set(logId, log);
 
-  const related = Array.from(reminders.values()).filter(
+  acknowledgeRemindersBy(
     r => r.weaponId === req.params.weaponId &&
       (r.type === 'maintenance' || r.type === 'maintenance_overdue') &&
       !r.acknowledged
   );
-  related.forEach(r => {
-    r.acknowledged = true;
-    r.acknowledgedAt = now.toISOString();
-  });
 
   const weapon = weapons.get(req.params.weaponId);
   return res.success({ log, plan, weapon }, '养护记录已更新');
 });
 
 router.get('/logs', (req, res) => {
-  const { weaponId, operator, page = 1, pageSize = 20 } = req.query;
-  const p = parseInt(page);
-  const ps = parseInt(pageSize);
-
-  let list = Array.from(maintenanceLogs.values());
-  if (weaponId) list = list.filter(l => l.weaponId === weaponId);
-  if (operator) list = list.filter(l => l.operator.includes(operator));
-
-  list.sort((a, b) => new Date(b.executedAt) - new Date(a.executedAt));
-
-  const withWeapon = list.map(l => ({
-    ...l,
-    weapon: weapons.get(l.weaponId) || null
-  }));
-
-  const total = withWeapon.length;
-  const start = (p - 1) * ps;
-  const paginated = withWeapon.slice(start, start + ps);
-
-  return res.success({ list: paginated, total, page: p, pageSize: ps });
+  const { weaponId, operator } = req.query;
+  const filters = { weaponId };
+  if (operator) {
+    filters.operator = contains('operator', operator);
+  }
+  const result = queryList({
+    mapData: maintenanceLogs,
+    filters,
+    dateField: 'executedAt',
+    withWeapon: true,
+    query: req.query
+  });
+  return res.success(result);
 });
 
 router.get('/logs/weapon/:weaponId', (req, res) => {
@@ -251,30 +132,20 @@ router.get('/logs/:logId', (req, res) => {
 router.get('/reminders', (req, res) => {
   generateRemindersForAll();
 
-  const { weaponId, type, acknowledged, page = 1, pageSize = 20 } = req.query;
-  const p = parseInt(page);
-  const ps = parseInt(pageSize);
-
-  let list = Array.from(reminders.values());
-  if (weaponId) list = list.filter(r => r.weaponId === weaponId);
-  if (type) list = list.filter(r => r.type === type);
+  const { weaponId, type, acknowledged } = req.query;
+  const filters = { weaponId, type };
   if (acknowledged !== undefined) {
-    const ack = acknowledged === 'true' || acknowledged === true;
-    list = list.filter(r => r.acknowledged === ack);
+    const ack = parseBool(acknowledged);
+    filters.acknowledged = ack;
   }
-
-  const withWeapon = list.map(r => ({
-    ...r,
-    weapon: weapons.get(r.weaponId) || null
-  }));
-
-  withWeapon.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  const total = withWeapon.length;
-  const start = (p - 1) * ps;
-  const paginated = withWeapon.slice(start, start + ps);
-
-  return res.success({ list: paginated, total, page: p, pageSize: ps });
+  const result = queryList({
+    mapData: reminders,
+    filters,
+    dateField: 'createdAt',
+    withWeapon: true,
+    query: req.query
+  });
+  return res.success(result);
 });
 
 router.post('/reminders/:id/acknowledge', (req, res) => {
@@ -302,10 +173,7 @@ router.post('/borrow', (req, res) => {
     return res.fail(`当前状态 ${weapon.status} 无法外借`);
   }
 
-  const now = new Date();
-  weapon.status = STATUS.EXHIBITION;
-  weapon.statusHistory.push({ status: STATUS.EXHIBITION, time: now.toISOString(), remark: purpose || '展览外借' });
-  weapon.updatedAt = now.toISOString();
+  const now = setWeaponStatus(weapon, STATUS.EXHIBITION, purpose || '展览外借');
 
   const recordId = generateId();
   const record = {
@@ -339,43 +207,26 @@ router.post('/borrow/:recordId/return', (req, res) => {
 
   const weapon = weapons.get(record.weaponId);
   if (weapon) {
-    weapon.status = STATUS.NORMAL;
-    weapon.statusHistory.push({ status: STATUS.NORMAL, time: now.toISOString(), remark: remark || '外借归还' });
-    weapon.updatedAt = now.toISOString();
+    setWeaponStatus(weapon, STATUS.NORMAL, remark || '外借归还');
   }
 
-  const related = Array.from(reminders.values()).filter(
+  acknowledgeRemindersBy(
     r => r.borrowRecordId === req.params.recordId && !r.acknowledged
   );
-  related.forEach(r => {
-    r.acknowledged = true;
-    r.acknowledgedAt = now.toISOString();
-  });
 
   return res.success({ record, weapon }, '归还成功');
 });
 
 router.get('/borrow', (req, res) => {
-  const { weaponId, status, page = 1, pageSize = 20 } = req.query;
-  const p = parseInt(page);
-  const ps = parseInt(pageSize);
-
-  let list = Array.from(borrowRecords.values());
-  if (weaponId) list = list.filter(r => r.weaponId === weaponId);
-  if (status) list = list.filter(r => r.status === status);
-
-  const withWeapon = list.map(r => ({
-    ...r,
-    weapon: weapons.get(r.weaponId) || null
-  }));
-
-  withWeapon.sort((a, b) => new Date(b.borrowDate) - new Date(a.borrowDate));
-
-  const total = withWeapon.length;
-  const start = (p - 1) * ps;
-  const paginated = withWeapon.slice(start, start + ps);
-
-  return res.success({ list: paginated, total, page: p, pageSize: ps });
+  const { weaponId, status } = req.query;
+  const result = queryList({
+    mapData: borrowRecords,
+    filters: { weaponId, status },
+    dateField: 'borrowDate',
+    withWeapon: true,
+    query: req.query
+  });
+  return res.success(result);
 });
 
 module.exports = {
