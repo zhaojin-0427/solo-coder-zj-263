@@ -3,6 +3,7 @@ const {
   STATUS,
   weapons,
   maintenancePlans,
+  maintenanceLogs,
   reminders,
   borrowRecords,
   generateId,
@@ -167,7 +168,11 @@ router.post('/plans/:weaponId/maintain', (req, res) => {
   const plan = maintenancePlans.get(req.params.weaponId);
   if (!plan) return res.fail('养护计划不存在', 404);
 
-  const { remark, operator } = req.body;
+  const { remark, operator, executionMethod, result } = req.body;
+  if (!operator) return res.fail('请指定执行人');
+  if (!executionMethod) return res.fail('请填写执行方式');
+  if (!result) return res.fail('请填写执行结果');
+
   const now = new Date();
 
   plan.lastMaintenanceDate = now.toISOString();
@@ -178,6 +183,19 @@ router.post('/plans/:weaponId/maintain', (req, res) => {
     operator: operator || '',
     remark: remark || '常规养护'
   });
+
+  const logId = generateId();
+  const log = {
+    id: logId,
+    weaponId: req.params.weaponId,
+    planId: plan.id,
+    operator,
+    executionMethod,
+    result,
+    remark: remark || '',
+    executedAt: now.toISOString()
+  };
+  maintenanceLogs.set(logId, log);
 
   const related = Array.from(reminders.values()).filter(
     r => r.weaponId === req.params.weaponId &&
@@ -190,7 +208,44 @@ router.post('/plans/:weaponId/maintain', (req, res) => {
   });
 
   const weapon = weapons.get(req.params.weaponId);
-  return res.success({ plan, weapon }, '养护记录已更新');
+  return res.success({ log, plan, weapon }, '养护记录已更新');
+});
+
+router.get('/logs', (req, res) => {
+  const { weaponId, operator, page = 1, pageSize = 20 } = req.query;
+  const p = parseInt(page);
+  const ps = parseInt(pageSize);
+
+  let list = Array.from(maintenanceLogs.values());
+  if (weaponId) list = list.filter(l => l.weaponId === weaponId);
+  if (operator) list = list.filter(l => l.operator.includes(operator));
+
+  list.sort((a, b) => new Date(b.executedAt) - new Date(a.executedAt));
+
+  const withWeapon = list.map(l => ({
+    ...l,
+    weapon: weapons.get(l.weaponId) || null
+  }));
+
+  const total = withWeapon.length;
+  const start = (p - 1) * ps;
+  const paginated = withWeapon.slice(start, start + ps);
+
+  return res.success({ list: paginated, total, page: p, pageSize: ps });
+});
+
+router.get('/logs/weapon/:weaponId', (req, res) => {
+  const list = Array.from(maintenanceLogs.values())
+    .filter(l => l.weaponId === req.params.weaponId)
+    .sort((a, b) => new Date(b.executedAt) - new Date(a.executedAt));
+  return res.success(list);
+});
+
+router.get('/logs/:logId', (req, res) => {
+  const log = maintenanceLogs.get(req.params.logId);
+  if (!log) return res.fail('养护日志不存在', 404);
+  const weapon = weapons.get(log.weaponId);
+  return res.success({ ...log, weapon });
 });
 
 router.get('/reminders', (req, res) => {

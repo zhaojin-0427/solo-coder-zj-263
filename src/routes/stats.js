@@ -2,7 +2,10 @@ const express = require('express');
 const {
   weapons,
   repairs,
+  repairApprovals,
+  APPROVAL_STATUS,
   maintenancePlans,
+  maintenanceLogs,
   reminders,
   borrowRecords,
   daysBetween
@@ -15,6 +18,8 @@ router.get('/overview', (req, res) => {
   const repairList = Array.from(repairs.values());
   const borrowList = Array.from(borrowRecords.values());
   const reminderList = Array.from(reminders.values());
+  const approvalList = Array.from(repairApprovals.values());
+  const maintenanceLogList = Array.from(maintenanceLogs.values());
 
   const statusStats = {};
   weaponList.forEach(w => {
@@ -34,6 +39,23 @@ router.get('/overview', (req, res) => {
   const repairCount = repairList.length;
   const completedRepairs = repairList.filter(r => r.status === 'completed').length;
   const pendingRepairs = repairList.filter(r => r.status === 'in_progress').length;
+
+  const decidedApprovals = approvalList.filter(
+    a => a.status === APPROVAL_STATUS.APPROVED || a.status === APPROVAL_STATUS.REJECTED
+  );
+  const approvedCount = approvalList.filter(a => a.status === APPROVAL_STATUS.APPROVED).length;
+  const rejectedCount = approvalList.filter(a => a.status === APPROVAL_STATUS.REJECTED).length;
+  const approvalPassRate = decidedApprovals.length > 0
+    ? Math.round((approvedCount / decidedApprovals.length) * 10000) / 100
+    : 100;
+
+  const totalMaintenancePlans = maintenancePlans.size;
+  const successfulMaintenanceLogs = maintenanceLogList.filter(l =>
+    l.result === 'success' || l.result === '完成' || l.result === '成功' || l.result === 'completed'
+  ).length;
+  const maintenanceExecutionCompletionRate = totalMaintenancePlans > 0
+    ? Math.round((maintenanceLogList.length / totalMaintenancePlans) * 10000) / 100
+    : maintenanceLogList.length > 0 ? 100 : 100;
 
   const now = new Date();
   const maintenanceReminders = reminderList.filter(
@@ -66,8 +88,19 @@ router.get('/overview', (req, res) => {
       completed: completedRepairs,
       inProgress: pendingRepairs
     },
+    approval: {
+      total: approvalList.length,
+      pendingPlan: approvalList.filter(a => a.status === APPROVAL_STATUS.PENDING_PLAN).length,
+      pendingApproval: approvalList.filter(a => a.status === APPROVAL_STATUS.PENDING_APPROVAL).length,
+      approved: approvedCount,
+      rejected: rejectedCount,
+      passRate: approvalPassRate
+    },
     maintenance: {
-      totalPlans: maintenancePlans.size,
+      totalPlans: totalMaintenancePlans,
+      totalLogs: maintenanceLogList.length,
+      successfulLogs: successfulMaintenanceLogs,
+      executionCompletionRate: maintenanceExecutionCompletionRate,
       totalReminders: maintenanceReminders.length,
       acknowledged: acknowledgedMaintenance,
       responseRate: maintenanceResponseRate
@@ -237,6 +270,158 @@ router.get('/maintenance-response-rate', (req, res) => {
     avgResponseDays,
     byType,
     byWeapon: Object.values(byWeapon).sort((a, b) => a.responseRate - b.responseRate).slice(0, 20)
+  });
+});
+
+router.get('/approval-pass-rate', (req, res) => {
+  const { startDate, endDate } = req.query;
+
+  let approvalList = Array.from(repairApprovals.values());
+  if (startDate) {
+    const sd = new Date(startDate);
+    approvalList = approvalList.filter(a => new Date(a.appliedAt) >= sd);
+  }
+  if (endDate) {
+    const ed = new Date(endDate);
+    approvalList = approvalList.filter(a => new Date(a.appliedAt) <= ed);
+  }
+
+  const total = approvalList.length;
+  const pendingPlan = approvalList.filter(a => a.status === APPROVAL_STATUS.PENDING_PLAN).length;
+  const pendingApproval = approvalList.filter(a => a.status === APPROVAL_STATUS.PENDING_APPROVAL).length;
+  const approved = approvalList.filter(a => a.status === APPROVAL_STATUS.APPROVED).length;
+  const rejected = approvalList.filter(a => a.status === APPROVAL_STATUS.REJECTED).length;
+  const decided = approved + rejected;
+  const passRate = decided > 0 ? Math.round((approved / decided) * 10000) / 100 : 100;
+
+  const byApplicant = {};
+  approvalList.forEach(a => {
+    const name = a.applicant?.name || '未知';
+    if (!byApplicant[name]) {
+      byApplicant[name] = { applicant: name, total: 0, approved: 0, rejected: 0, passRate: 0 };
+    }
+    byApplicant[name].total += 1;
+    if (a.status === APPROVAL_STATUS.APPROVED) byApplicant[name].approved += 1;
+    if (a.status === APPROVAL_STATUS.REJECTED) byApplicant[name].rejected += 1;
+  });
+  Object.values(byApplicant).forEach(x => {
+    const d = x.approved + x.rejected;
+    x.passRate = d > 0 ? Math.round((x.approved / d) * 10000) / 100 : 100;
+  });
+
+  const byWeapon = {};
+  approvalList.forEach(a => {
+    if (!byWeapon[a.weaponId]) {
+      const w = weapons.get(a.weaponId);
+      byWeapon[a.weaponId] = {
+        weaponId: a.weaponId,
+        weaponName: w ? w.name : '未知',
+        total: 0,
+        approved: 0,
+        rejected: 0,
+        passRate: 0
+      };
+    }
+    byWeapon[a.weaponId].total += 1;
+    if (a.status === APPROVAL_STATUS.APPROVED) byWeapon[a.weaponId].approved += 1;
+    if (a.status === APPROVAL_STATUS.REJECTED) byWeapon[a.weaponId].rejected += 1;
+  });
+  Object.values(byWeapon).forEach(w => {
+    const d = w.approved + w.rejected;
+    w.passRate = d > 0 ? Math.round((w.approved / d) * 10000) / 100 : 100;
+  });
+
+  return res.success({
+    total,
+    pendingPlan,
+    pendingApproval,
+    approved,
+    rejected,
+    decided,
+    passRate,
+    byApplicant: Object.values(byApplicant).sort((a, b) => b.total - a.total).slice(0, 20),
+    byWeapon: Object.values(byWeapon).sort((a, b) => b.total - a.total).slice(0, 20)
+  });
+});
+
+router.get('/maintenance-completion-rate', (req, res) => {
+  const { startDate, endDate } = req.query;
+
+  let logList = Array.from(maintenanceLogs.values());
+  if (startDate) {
+    const sd = new Date(startDate);
+    logList = logList.filter(l => new Date(l.executedAt) >= sd);
+  }
+  if (endDate) {
+    const ed = new Date(endDate);
+    logList = logList.filter(l => new Date(l.executedAt) <= ed);
+  }
+
+  const totalPlans = maintenancePlans.size;
+  const totalLogs = logList.length;
+  const successResults = ['success', '完成', '成功', 'completed', '已完成', '正常'];
+  const successfulLogs = logList.filter(l => successResults.includes(String(l.result).toLowerCase())).length;
+  const completionRate = totalPlans > 0
+    ? Math.round((totalLogs / totalPlans) * 10000) / 100
+    : totalLogs > 0 ? 100 : 100;
+  const successRate = totalLogs > 0
+    ? Math.round((successfulLogs / totalLogs) * 10000) / 100
+    : 100;
+
+  const byOperator = {};
+  logList.forEach(l => {
+    const name = l.operator || '未知';
+    if (!byOperator[name]) {
+      byOperator[name] = { operator: name, total: 0, successful: 0, successRate: 0 };
+    }
+    byOperator[name].total += 1;
+    if (successResults.includes(String(l.result).toLowerCase())) byOperator[name].successful += 1;
+  });
+  Object.values(byOperator).forEach(x => {
+    x.successRate = x.total > 0 ? Math.round((x.successful / x.total) * 10000) / 100 : 100;
+  });
+
+  const byWeapon = {};
+  logList.forEach(l => {
+    if (!byWeapon[l.weaponId]) {
+      const w = weapons.get(l.weaponId);
+      byWeapon[l.weaponId] = {
+        weaponId: l.weaponId,
+        weaponName: w ? w.name : '未知',
+        total: 0,
+        successful: 0,
+        successRate: 0
+      };
+    }
+    byWeapon[l.weaponId].total += 1;
+    if (successResults.includes(String(l.result).toLowerCase())) byWeapon[l.weaponId].successful += 1;
+  });
+  Object.values(byWeapon).forEach(w => {
+    w.successRate = w.total > 0 ? Math.round((w.successful / w.total) * 10000) / 100 : 100;
+  });
+
+  const byMethod = {};
+  logList.forEach(l => {
+    const method = l.executionMethod || '未知';
+    if (!byMethod[method]) {
+      byMethod[method] = { method, total: 0, successful: 0, successRate: 0 };
+    }
+    byMethod[method].total += 1;
+    if (successResults.includes(String(l.result).toLowerCase())) byMethod[method].successful += 1;
+  });
+  Object.values(byMethod).forEach(m => {
+    m.successRate = m.total > 0 ? Math.round((m.successful / m.total) * 10000) / 100 : 100;
+  });
+
+  return res.success({
+    totalPlans,
+    totalLogs,
+    successfulLogs,
+    completionRate,
+    successRate,
+    byOperator: Object.values(byOperator).sort((a, b) => b.total - a.total).slice(0, 20),
+    byWeapon: Object.values(byWeapon).sort((a, b) => b.total - a.total).slice(0, 20),
+    byMethod: Object.values(byMethod).sort((a, b) => b.total - a.total).slice(0, 20)
   });
 });
 

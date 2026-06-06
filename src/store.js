@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const STATUS = {
   NORMAL: 'normal_storage',
+  PENDING_APPROVAL: 'pending_approval',
   PENDING_REPAIR: 'pending_repair',
   REPAIRING: 'repairing',
   REPAIRED: 'repaired',
@@ -9,11 +10,19 @@ const STATUS = {
 };
 
 const STATUS_TRANSITIONS = {
-  [STATUS.NORMAL]: [STATUS.PENDING_REPAIR, STATUS.EXHIBITION],
+  [STATUS.NORMAL]: [STATUS.PENDING_APPROVAL, STATUS.EXHIBITION],
+  [STATUS.PENDING_APPROVAL]: [STATUS.PENDING_REPAIR, STATUS.NORMAL],
   [STATUS.PENDING_REPAIR]: [STATUS.REPAIRING, STATUS.NORMAL],
   [STATUS.REPAIRING]: [STATUS.REPAIRED],
   [STATUS.REPAIRED]: [STATUS.NORMAL, STATUS.PENDING_REPAIR],
   [STATUS.EXHIBITION]: [STATUS.NORMAL]
+};
+
+const APPROVAL_STATUS = {
+  PENDING_PLAN: 'pending_plan',
+  PENDING_APPROVAL: 'pending_approval',
+  APPROVED: 'approved',
+  REJECTED: 'rejected'
 };
 
 const MATERIAL_MAINTENANCE_DAYS = {
@@ -38,7 +47,9 @@ const ENVIRONMENT_FACTOR = {
 
 const weapons = new Map();
 const repairs = new Map();
+const repairApprovals = new Map();
 const maintenancePlans = new Map();
+const maintenanceLogs = new Map();
 const reminders = new Map();
 const borrowRecords = new Map();
 
@@ -69,11 +80,14 @@ function daysBetween(date1, date2) {
 module.exports = {
   STATUS,
   STATUS_TRANSITIONS,
+  APPROVAL_STATUS,
   MATERIAL_MAINTENANCE_DAYS,
   ENVIRONMENT_FACTOR,
   weapons,
   repairs,
+  repairApprovals,
   maintenancePlans,
+  maintenanceLogs,
   reminders,
   borrowRecords,
   generateId,
